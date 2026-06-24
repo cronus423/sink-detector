@@ -1,0 +1,23 @@
+{
+  "dataset": {
+    "functions": 2760,
+    "sinks": 524,
+    "non_sinks": 2236
+  },
+  "operating_threshold": 0.479,
+  "pooled_5fold": {
+    "TP": 482,
+    "FP": 48,
+    "FN": 42,
+    "TN": 2188,
+    "precision": 0.909,
+    "recall": 0.92,
+    "f1": 0.915,
+    "accuracy": 0.967
+  },
+  "cross_program_LOPO": {
+    "balanced_precision": 0.842,
+    "balanced_recall": 0.844,
+    "note": "honest cross-program number (held-out whole program)"
+  }
+}
