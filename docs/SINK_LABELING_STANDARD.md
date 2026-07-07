@@ -20,6 +20,56 @@ from attacker-controlled input.
 It is NOT the attack surface/origin (parsers, path canonicalizers, input
 readers), NOT pure plumbing, NOT a function that merely *routes toward* an effect.
 
+## 1a. Scope — this detector marks ENDPOINTS; attacker-reachability is a SEPARATE module
+
+A sink here means **"a point worth attacking"** — an *effect endpoint*: a function
+that performs a final security-relevant effect (exec / privilege / capability /
+file-mutation / **file-read disclosure** / authz / network). **Whether an attacker
+can actually reach it — whether the effect's key argument is truly
+attacker-controlled — is OUT OF SCOPE for this detector.** That reachability
+question is a separate downstream module. This module only outputs the endpoint
+list; the reachability module filters it into actual vulnerabilities.
+
+Consequences of this split (adopted 2026-07-06):
+
+- **Do NOT do backward "attacker-input → argument" taint here.** Backward source
+  tracking is unreliable (attacker influence can arrive via overflow, indirect
+  memory writes, multi-step parsing that breaks the taint chain). We skip it.
+- **Detection is FORWARD-only.** For the file-read-disclosure class, the endpoint
+  test is: **file-read content flows to an EXTERNAL output channel** —
+  `read/fread/fgets/mmap` content reaches `send/sendto/write-to-socket/
+  fwrite-or-printf-to-stdout(client)`, in the same function OR via a struct-field/
+  fd carried to another function (cross-function forward value-flow).
+- **Two conditions must both hold to mark an endpoint** (avoid false endpoints):
+  (1) the output content came from a FILE READ (read→output def-use), not a
+  server-generated string; (2) the output goes to an EXTERNAL channel, not a log
+  file / stderr.
+- **Calibration: over-approximate on the PATH dimension, be precise on the
+  ENDPOINT dimension.** A function that serves a *fixed/server-controlled* file
+  (template, own cert) is STILL marked (it is a real disclosure endpoint; the
+  downstream reachability module decides if the path is attacker-controlled).
+  Missing a real endpoint is the costly error. But do NOT mark non-endpoints:
+  error/status responders (`_NotFound` 404, FTP `550`), banners, computed
+  responses (`Fib`, request-echo `HelloPage`), redirects, or log/stderr writers —
+  those output something, but not file content to an external channel.
+
+### Endpoint-detection pipeline (converged 2026-07-06)
+
+```
+XGBoost (score)         -> easy endpoints A  (clean-primitive sinks, e.g. calls open())
+capability recall       -> candidates B      (reaches a file-read primitive; RECALL net,
+                                              NOT XGBoost score — score under-ranks the
+                                              wrapper-chain sinks and would drop them)
+B \ A                   -> forward taint: file-content -> external channel?  confirm
+output = A ∪ confirm(B\A)-> "worth attacking" endpoint list  -> reachability module
+```
+XGBoost handles the clean-primitive endpoints (open-based read sinks transfer well);
+forward cross-function value-flow handles the ones it structurally cannot (fopen /
+decoupled struct-buffer / delegated-to-helper: `_ReadStaticFiles`, `handle_retr`,
+`xfer_retr`, `send_binary_file`). The capability net must be **reach-level** (transitively
+reaches a read primitive), not direct-call-level, or the delegated cases (`handle_retr`
+calls `str_open`, not a read primitive directly) slip out before taint runs.
+
 ## 2. Effect taxonomy (closed list)
 
 Every sink must map to ≥1 of these effect categories. A function mapping to none
@@ -31,6 +81,7 @@ is a non-sink. (Reused from the existing pipeline vocabulary, grouped.)
 | `privilege` | identity transition: setuid/setgid/setreuid/setresuid/seteuid/setgroups/initgroups |
 | `capability` | confinement/cap: capset, chroot, prctl(KEEPCAPS/SECUREBITS), mount, unshare, setns |
 | `file_mutation` | chmod/chown/unlink/rename/link/symlink/mkdir/rmdir/truncate/creat, open-for-write |
+| `file_read` | content DISCLOSURE: open-for-read/read/pread/fread/fgets/mmap/sendfile/opendir/readdir of an attacker-influenced path whose CONTENTS flow back to the attacker (static-file serve, FTP RETR, TFTP RRQ, SFTP read). NOT metadata-only reads (stat/access/readlink), NOT own-config/pidfile/key reads, NOT credential reads for an auth decision (that is `authz`). |
 | `authz` | authorization/authentication DECISION returning allow/deny on attacker input |
 | `network` | endpoint to attacker-influenced address: bind/listen/connect, backend connect |
 

@@ -59,6 +59,16 @@ add(["chmod","fchmod","fchmodat","chown","fchown","lchown","fchownat","unlink","
     "file_mutation")
 add(["setrlimit","prlimit","prlimit64","setpriority"], "rlimit")
 
+# `file_read` = content-DISCLOSURE reads. Kept as a SEPARATE set (not in EFFECT)
+# because open*/creat* are already `file_mutation` yet an open-for-read is also a
+# read; a function can be both. Detected the same way (direct call target). See
+# docs/SINK_LABELING_STANDARD.md effect taxonomy.
+FILEREAD = set("""read pread pread64 readv preadv fread fread_unlocked fgets
+fgets_unlocked fgetc getc getc_unlocked getline getdelim fscanf __isoc99_fscanf
+mmap mmap64 sendfile sendfile64 opendir fdopendir readdir readdir64 readdir_r
+scandir scandir64 fopen fopen64 freopen freopen64 fdopen open open64 openat
+openat64""".split())
+
 SYM = re.compile(r'<([^>+@]+)')
 
 def main():
@@ -77,13 +87,16 @@ def main():
                 if not ins.startswith("call"): continue
                 m = SYM.search(ins)
                 if not m: continue
-                cat = EFFECT.get(m.group(1).strip())
+                tgt = m.group(1).strip()
+                cat = EFFECT.get(tgt)
                 if cat: cnt[r["function"]][cat]+=1
+                if tgt in FILEREAD: cnt[r["function"]]["file_read"]+=1
         feats={}
         for fn,cc in cnt.items():
             row={f"eff_{c}":int(cc.get(c,0)) for c in CATS}
-            row["eff_total"]=int(sum(cc.values()))
+            row["eff_total"]=int(sum(cc.get(c,0) for c in CATS))
             row["eff_ncats"]=int(sum(1 for c in CATS if cc.get(c)))
+            row["eff_file_read"]=int(cc.get("file_read",0))
             feats[fn]=row
         out[prog]=feats
         print(f"{prog:24s} functions with binary effect calls: {len(feats)}")

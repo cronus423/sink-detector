@@ -16,7 +16,7 @@ sys.path.insert(0, str(SCRIPTS))
 import callgraph_reach_features as CG
 import bin_effect_features as BE   # reuse EFFECT map + disasm_path
 
-CATS = ["privilege_identity","capability","exec","file_mutation","mount","rlimit"]
+CATS = ["privilege_identity","capability","exec","file_mutation","mount","rlimit","file_read"]
 SYM = re.compile(r'<([^>+@]+)')
 
 def build(prog):
@@ -34,7 +34,9 @@ def build(prog):
             tgt = m.group(1).strip()
             cat = BE.EFFECT.get(tgt)
             if cat: direct[fn].add(cat)
-            else:   callees[fn].add(tgt)          # internal-call edge
+            if tgt in BE.FILEREAD: direct[fn].add("file_read")   # dual: open* is also file_mutation
+            if not cat and tgt not in BE.FILEREAD:
+                callees[fn].add(tgt)                              # internal-call edge
     for fn in list(callees): callees[fn] &= allfns
     return callees, direct, allfns
 

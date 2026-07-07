@@ -152,6 +152,10 @@
     "s_fmt",
     "p_nparam",
     "p_nptr",
+    "eff_file_read",
+    "reach_file_read",
+    "fr_computed_path",
+    "writes_send_buffer",
     "name_auth",
     "name_passwd",
     "name_password",
@@ -432,7 +436,11 @@
     "s_cap",
     "s_fmt",
     "p_nparam",
-    "p_nptr"
+    "p_nptr",
+    "eff_file_read",
+    "reach_file_read",
+    "fr_computed_path",
+    "writes_send_buffer"
   ],
   "name_keywords": [
     "auth",
@@ -567,6 +575,6 @@
     "ty_termios",
     "ty_ucred"
   ],
-  "threshold": 0.4791010320186615,
-  "n_features": 279
+  "threshold": 0.3961569666862488,
+  "n_features": 283
 }

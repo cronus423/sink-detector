@@ -31,6 +31,18 @@ def binpath(prog):
     return max(elfs, key=lambda p:p.stat().st_size) if elfs else None
 
 RIP = re.compile(r'\[rip([+-]0x[0-9a-fA-F]+)\]')
+# small servers stack-initialize path/format strings via immediate movs
+# (e.g. `movabs rax,0x2f636974617473` = "static/"), which have NO rodata
+# reference and were invisible to rip-relative extraction. Reconstruct them.
+IMM = re.compile(r',\s*(0x[0-9a-fA-F]{7,16})\b')
+def imm_string(h):
+    v = int(h, 16); nb = (len(h) - 2 + 1) // 2
+    try: b = v.to_bytes(nb, "little")
+    except OverflowError: return None
+    b = b.split(b"\x00", 1)[0]                       # stop at NUL
+    if len(b) >= 3 and all(32 <= c < 127 for c in b):
+        return b.decode("ascii")
+    return None
 PAT_SYS = re.compile(r'^/(etc|var|tmp|usr|bin|sbin|dev|proc|lib|root)\b|^/[a-z]+/')
 PAT_SH  = re.compile(r'/bin/sh|/bin/bash|(^|/)(sh|bash|dash)$')
 PAT_CR  = re.compile(r'uid|gid|user|passwd|shadow|root|group|privile|cred|login|setuid', re.I)
@@ -68,14 +80,21 @@ def main():
         strs=defaultdict(list)
         with dpath.open() as f:
             for line in f:
-                if "rip" not in line: continue
                 r=json.loads(line); fn=r.get("function"); ins=r.get("instruction","")
-                m=RIP.search(ins)
-                if not fn or not m: continue
-                try: disp=int(m.group(1),16); tgt=int(r["pc"],16)+r.get("size",0)+disp
-                except: continue
-                s=resolve(data,secs,tgt)
-                if s: strs[fn].append(s)
+                if not fn: continue
+                if "rip" in ins:
+                    m=RIP.search(ins)
+                    if m:
+                        try: disp=int(m.group(1),16); tgt=int(r["pc"],16)+r.get("size",0)+disp
+                        except: tgt=None
+                        if tgt is not None:
+                            s=resolve(data,secs,tgt)
+                            if s: strs[fn].append(s)
+                if ins.startswith("mov"):                 # stack-immediate strings
+                    mi=IMM.search(ins)
+                    if mi:
+                        s=imm_string(mi.group(1))
+                        if s: strs[fn].append(s)
         dw=CG.dwarf_names(CG.DWARF[prog])
         feats={}
         for fn,ls in strs.items():
