@@ -39,3 +39,21 @@ unlabeled, ~22 non-sinks over-labeled. Applied 34 verified corrections (gt_corre
   buf_put_ecc_raw_pubkey_string/fill_passwd/svr_pubkey_allows_×5/svr_pubkey_options_cleanup.
 
 Cleaned-GT re-run: **Precision 0.915, Recall 0.921** (TP=396 FP=37 FN=34). Residual FP/FN are genuine.
+
+### sudo plugin feature completion + model RETRAIN
+The training set was missing 424 sudo functions (the `sudoers.so` plugin). Not a bug: the plugin
+was already built + statically analyzed (`stage_02_sudoers_plugin/`, Jun 19) — no rebuild/VM/local-sudo
+touched. The 424 were in the labels but absent from the 283-feature inference table because
+`dwarf_rich`/`struct_local`/`callgraph_reach` filter to the main binary's DWARF (160 funcs).
+Fix: reused the 156 I.feats columns from `integrated` (already correct via build_curated's aux lookup),
+recomputed `name_*` from names, and computed `dwarf_rich`+`struct_local` on `target/sudoers.so`
+(objdump decodedline + pyelftools). Appended 424 rows → sudo now 584 funcs, 0 broken, median 70/283
+nonzero. Trainable set: 2374 -> **2798 functions (534 sinks pre-correction, 524 after)**, matching the
+original metrics.
+
+RETRAINED (train_final config: binary:logistic, depth 5, eta 0.05, 300 rounds, subsample 0.85) on the
+cleaned 2798-func dataset. Saved model/sink_model.json + feature_spec.json (thr 0.385) + metrics.json.
+- pooled 5-fold: P 0.907 / R 0.908 / F1 0.908 (was 0.895).
+- cross-program LOPO (honest): P 0.923 / R 0.782 for XGBoost alone; **full chain (XGB + P1-P5): P 0.923 /
+  R 0.803 / F1 0.859** — P1-P5 recovers +11 real sinks XGBoost missed at +1 FP. LOPO balanced dipped
+  0.818->0.810 only because full sudo now contributes 94 hard-to-transfer plugin sinks (honest, not a regression).
