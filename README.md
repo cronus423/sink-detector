@@ -14,34 +14,59 @@ read from `.c` files.
 
 ## Final results
 
-Model: a single **XGBoost** gradient-boosted-tree classifier, **279 binary
-features**, trained on **2760 functions (524 sinks / 2236 non-sinks)** across
-14 programs (HTTP, FTP, SSH, sudo/doas/polkit, DNS).
+Model: a single **XGBoost** gradient-boosted-tree classifier, **283 binary
+features**, trained on **2798 functions (524 sinks / 2274 non-sinks)** across
+16 programs (HTTP, FTP, SSH, sudo/doas/polkit, DNS). Labels cleaned by a
+source-verified FP/FN audit (34 corrections — see `FP_FN_AUDIT.md` /
+`gt_corrections.json`); the sudoers.so plugin (424 funcs) is fully included.
 
 | Evaluation | Precision | Recall | F1 | Notes |
 |---|--:|--:|--:|---|
-| **Pooled 5-fold CV** (within-distribution) | **0.909** | **0.920** | 0.915 | accuracy 0.967 |
-| **Leave-one-program-out** (unseen program) | **0.842** | **0.844** | — | the honest cross-program number |
+| **Pooled 5-fold CV** (within-distribution) | **0.907** | **0.908** | 0.908 | accuracy 0.965 |
+| **LOPO — XGBoost alone** (unseen program) | **0.923** | **0.782** | 0.847 | honest cross-program |
+| **LOPO — full chain (XGBoost + P1–P5)** | **0.923** | **0.803** | 0.859 | + file-read recall booster |
 
-Pooled 5-fold confusion matrix (operating threshold ≈ 0.48):
+Pooled 5-fold confusion matrix (operating threshold 0.385):
 
 |              | predicted sink | predicted non-sink |
 |---|--:|--:|
-| **actual sink**     | TP = 482 | FN = 42 |
-| **actual non-sink** | FP = 48  | TN = 2188 |
+| **actual sink**     | TP = 476 | FN = 48 |
+| **actual non-sink** | FP = 49  | TN = 2225 |
 
 Honesty notes:
-- The cross-program **LOPO 0.842/0.844** is the number to trust for "apply to a
-  brand-new binary."
-- The pooled 0.91 is mildly optimistic: some authz labels are derived from
-  function-name patterns and name is also a feature (partial circularity). LOPO
-  generalizes anyway because "auth"-named functions *are* usually authz sinks.
-- Residual errors: FN ≈ authz functions whose verdict/vocabulary lives upstream
-  in callers; FP ≈ self-cleanup of own files (`do_cleanup`, pidfile/scoreboard).
+- **LOPO** is the number to trust for a brand-new binary. Full-chain LOPO
+  (`0.923/0.803`) beats XGBoost alone (`0.923/0.782`): the `endpoint_detector`
+  (P1–P5) recovers **+11 file-read / delegation sinks XGBoost structurally misses,
+  at +1 FP** (LOPO confusion — XGB alone TP=410 FP=34 FN=114; full chain TP=421 FP=35 FN=103).
+- sudo's LOPO recall is low on purpose-honest grounds: 94 sudoers-plugin sinks
+  (policy/alias/permission parsing) are hard to transfer cross-program. Earlier
+  numbers omitted the plugin; this is the complete, honest evaluation.
+- Residual FN ≈ authz functions whose vocabulary lives upstream in callers;
+  FP ≈ self-cleanup of own files.
 
-Example inference (doas, threshold 0.48): flags `checkconfig` (policy),
-`main` (privilege-drop + exec), `readpassphrase`, `shadowauth` — exactly its
-attack endpoints.
+## The integrated pipeline (XGBoost + endpoint_detector)
+
+XGBoost is a high-precision coarse screen for the **broad** sink class
+(privilege/exec/file-mutation/authz). It structurally cannot find **file-read
+disclosure** endpoints (read a file → send to client) because that needs
+whole-program read→socket flow, not a per-function feature. `endpoint_detector/`
+(P1–P5, pure static) is the recall booster for exactly that class. `pipeline.py`
+chains them as designed:
+
+```
+final_sinks = S_xgb  ∪  { P2-P5 endpoints  ∩  (P1 recall_B − S_xgb) }
+```
+
+i.e. XGBoost coarse-screens → P1 builds the file-read candidate set → subtract
+what XGBoost already found → P2–P5 discriminate the remainder → union. On the
+file-read GT the chain reaches **15/15** (vs XGBoost's 11/15). See
+`endpoint_detector/README.md` for the P1–P5 / P4 fd-delegation details.
+
+Run:
+```bash
+python3 inference/scan_binary.py <target>     # XGBoost alone
+python3 pipeline.py [target ...]              # integrated chain
+```
 
 ---
 
@@ -55,9 +80,9 @@ sink_detector/
 │   ├── feature_spec.json       feature order + name keywords + dwarf-rich/struct cols + threshold
 │   └── metrics.json            final metrics (the table above), machine-readable
 ├── dataset/
-│   └── integrated_function_features.csv   labeled dataset: 2760 rows, base features + target_id/function/y
+│   └── integrated_function_features.csv   labeled dataset: 2798 rows, base features + target_id/function/y
 ├── data/                       ← bundled so inference/retrain need NO external artifacts
-│   ├── all_function_features.csv         EVERY DWARF function x 279 features (what scan_binary reads)
+│   ├── all_function_features.csv         EVERY DWARF function x 283 features (what scan_binary reads)
 │   ├── dwarf_rich_features.json          source-file/param features (retrain input)
 │   └── dwarf_struct_local_features.json  local/struct features (retrain input)
 ├── feature_extractors/         ALL features below are binary/DWARF-derived (no source)
@@ -73,15 +98,22 @@ sink_detector/
 │   ├── recall_endpoint_scan.py       label helper: find effect-issuing functions (source allowed here)
 │   ├── relabel_all_concrete.py       apply SINK_LABELING_STANDARD -> concrete + authz labels (per binary)
 │   ├── build_integrated_dataset.py   assemble feature rows (feats()) + write the dataset CSV
-│   ├── gen_all_function_features.py  one-time: dump data/all_function_features.csv (all funcs x 279)
-│   └── train_final.py                build 279-feature matrix, train, save model+spec+metrics
+│   ├── gen_all_function_features.py  one-time: dump data/all_function_features.csv (all funcs x 283)
+│   └── train_final.py                build 283-feature matrix, train, save model+spec+metrics
 ├── inference/
 │   └── scan_binary.py                scan a target's functions -> ranked sinks
+├── endpoint_detector/          file-read-disclosure recall booster (P1-P5, static, no model)
+│   ├── detector.py                 P1 recall + P2/P3/P5 taint + P4 fd-delegation (arg/table/queue)
+│   └── README.md                   pipeline stages + fd-carrier details
+├── pipeline.py                  integrated driver: XGBoost coarse-screen -> P1-P5 -> union
+├── FP_FN_AUDIT.md              source-verified FP/FN classification (true error vs GT mistake)
+├── gt_corrections.json         the 34 verified label corrections applied before retrain
+├── WORKLOG.md                  session log (P4, integration, sudo fix, retrain)
 └── docs/
     └── SINK_LABELING_STANDARD.md     the labeling rule (one consistent granularity)
 ```
 
-### The 279 features (all from the binary's DWARF/disassembly)
+### The 283 features (all from the binary's DWARF/disassembly)
 | group | count | what |
 |---|--:|---|
 | base (CFG/disasm) | 125 | instruction/block/edge counts, opcode stats (objdump) |
